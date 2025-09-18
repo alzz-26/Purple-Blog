@@ -1,24 +1,42 @@
-import sys
-import json
-import pandas as pd
-from textblob import TextBlob
 import joblib
+import pandas as pd
+import numpy as np
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
+# Load the preprocessor and the model
+preprocessor = joblib.load('preprocessor.pkl')
 model = joblib.load('engagement_model.pkl')
-vectorizer = joblib.load('vectorizer.pkl')
+analyzer = SentimentIntensityAnalyzer()
 
-input_data = json.loads(sys.stdin.read())
-content = input_data.get('content', '')
-hour = input_data.get('hour_of_day', 12)
-dow = input_data.get('day_of_week', 0)
+def predict_engagement(description, followers, views):
+    
+    # Get sentiment scores for the input text 
+    scores = analyzer.polarity_scores(description)
+    sentiment_pos = scores['pos']
+    sentiment_neg = scores['neg']
+    sentiment_compound = scores['compound']
 
-sent = TextBlob(content).sentiment
-val, ar = sent.polarity, abs(sent.subjectivity)
-tfidf_vec = vectorizer.transform([content]).toarray()[0]
+    # Create a DataFrame from the inputs
+    input_data = pd.DataFrame({
+        'description': [description],
+        'followers': [followers],
+        'sentiment_pos': [sentiment_pos],
+        'sentiment_neg': [sentiment_neg],
+        'sentiment_compound': [sentiment_compound]
+    })
 
-features = [val, ar, hour, dow] + list(tfidf_vec)
-df = pd.DataFrame([features])
+    # Transform data, convert to dense, and predict log-ratios
+    input_transformed = preprocessor.transform(input_data)
+    input_dense = input_transformed.toarray()
+    predicted_log_ratios = model.predict(input_dense)
 
-pred = model.predict(df)[0]
-
-print(json.dumps({'predictedLikes': int(pred[0]), 'predictedComments': int(pred[1])}))
+    # Inverse transform to get final counts
+    predicted_ratios = np.expm1(predicted_log_ratios)
+    predicted_likes_count = predicted_ratios[0, 0] * views
+    predicted_replies_count = predicted_ratios[0, 1] * views
+    
+    prediction_result = {
+        'predicted_likes': round(predicted_likes_count),
+        'predicted_replies': round(predicted_replies_count)
+    }
+    return prediction_result
